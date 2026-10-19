@@ -140,9 +140,10 @@ jobs:
           restore-keys: |
             uv-${{ runner.os }}-
 
-      # bandit reads source files and runs from a throwaway environment. pip-audit is installed
-      # into the portal's environment and audits exactly what is installed there. `|| true`
-      # swallows only the scanners' "issues found" exit codes; the reports are checked next.
+      # bandit reads source files and runs from a throwaway environment, through `uv tool run`
+      # because the image has no `uvx`. pip-audit is installed into the portal's environment and
+      # audits exactly what is installed there. `|| true` swallows only the scanners' "issues
+      # found" exit codes; the reports are checked next.
       - name: Run bandit and pip-audit
         env:
           IMAGE: ghcr.io/fair-dm/fairdm:${{ needs.platform.outputs.image }}-dev
@@ -157,7 +158,7 @@ jobs:
             sh -c '
               set -e
               uv sync --locked
-              uvx --from "bandit[toml]" bandit -r . --exclude ./tests,./.git,./.venv -f json -o bandit-report.json || true
+              uv tool run --from "bandit[toml]" bandit -r . --exclude ./tests,./.git,./.venv -f json -o bandit-report.json || true
               uv pip install --python /opt/venv/bin/python pip-audit
               pip-audit --local --format json --output pip-audit-report.json --progress-spinner off || true
             '
