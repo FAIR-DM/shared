@@ -6,6 +6,8 @@ All notable changes to this repository are recorded here. The format follows
 
 ## [Unreleased]
 
+## [v0.1.0] - 2026-10-19
+
 ### Added
 
 - Reusable workflows for FairDM portals: `tests.yml`, `browser-tests.yml`, `build-checks.yml`,
