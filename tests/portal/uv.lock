@@ -1995,7 +1995,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "fairdm", git = "https://github.com/FAIR-DM/fairdm?rev=fc3e29a292393c5c65b925b794409e817ec27015" }]
+requires-dist = [{ name = "fairdm", git = "https://github.com/FAIR-DM/fairdm?rev=1c2e0819647164c917d10316025630239ce346f0" }]
 
 [package.metadata.requires-dev]
 dev = [{ name = "mvp-shared", extras = ["dev", "test"], git = "https://github.com/django-mvp/shared.git?tag=v0.6.0" }]
@@ -2033,7 +2033,7 @@ wheels = [
 [[package]]
 name = "fairdm"
 version = "0.1.0"
-source = { git = "https://github.com/FAIR-DM/fairdm?rev=fc3e29a292393c5c65b925b794409e817ec27015#fc3e29a292393c5c65b925b794409e817ec27015" }
+source = { git = "https://github.com/FAIR-DM/fairdm?rev=1c2e0819647164c917d10316025630239ce346f0#1c2e0819647164c917d10316025630239ce346f0" }
 dependencies = [
     { name = "celery" },
     { name = "daisy-cotton-ext" },

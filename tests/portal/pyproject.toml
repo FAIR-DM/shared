@@ -10,7 +10,7 @@ dependencies = ["fairdm"]
 dev = ["mvp-shared[dev,test]"]
 
 [tool.uv.sources]
-fairdm = { git = "https://github.com/FAIR-DM/fairdm", rev = "fc3e29a292393c5c65b925b794409e817ec27015" }
+fairdm = { git = "https://github.com/FAIR-DM/fairdm", rev = "1c2e0819647164c917d10316025630239ce346f0" }
 mvp-shared = { git = "https://github.com/django-mvp/shared.git", tag = "v0.6.0" }
 
 [tool.ruff]
