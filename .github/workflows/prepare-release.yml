@@ -83,7 +83,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@v10.3.0
 
       # `uv version` updates the project's own entry in uv.lock with pyproject.toml, so
       # `uv sync --locked` still passes on the release commit.
