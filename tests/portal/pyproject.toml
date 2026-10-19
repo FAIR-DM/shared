@@ -1,0 +1,30 @@
+[project]
+name = "example-portal"
+version = "0.0.0"
+description = "A minimal FairDM portal that this repository's workflows are checked against."
+readme = "README.md"
+requires-python = ">=3.13,<4.0"
+dependencies = ["fairdm"]
+
+[dependency-groups]
+dev = ["mvp-shared[dev,test]"]
+
+[tool.uv.sources]
+fairdm = { git = "https://github.com/FAIR-DM/fairdm", rev = "fc3e29a292393c5c65b925b794409e817ec27015" }
+mvp-shared = { git = "https://github.com/django-mvp/shared.git", tag = "v0.6.0" }
+
+[tool.ruff]
+line-length = 88
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+addopts = ["--strict-markers"]
+markers = ["e2e: Browser tests (Playwright)"]
+env = [
+    # Playwright's sync API keeps an event loop running on the main thread, which trips
+    # Django's async-safety guard in live_server and database setup.
+    "DJANGO_ALLOW_ASYNC_UNSAFE=1",
+]
+
+[tool.coverage.run]
+source = ["config"]

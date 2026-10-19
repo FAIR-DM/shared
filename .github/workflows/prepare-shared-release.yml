@@ -1,0 +1,74 @@
+name: Prepare Shared Release
+
+# Releases this repository, not a portal. Run it from the Actions tab with a bump. It works out
+# the next version from the v<version> tags and opens a pull request that turns CHANGELOG.md's
+# Unreleased section into that version's. Merging the pull request is the release decision:
+# Tag Shared Release then creates the tag portals pin.
+#
+# RELEASE_TOKEN opens the pull request: one opened with GITHUB_TOKEN runs no checks, so it could
+# never merge.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to raise
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Open release pull request
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Work out the version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          latest="$(git tag --list 'v*' --sort=-version:refname | head -n 1)"
+          IFS=. read -r major minor patch <<< "${latest#v}"
+          major=${major:-0} minor=${minor:-0} patch=${patch:-0}
+          case "$BUMP" in
+            major) version="$((major + 1)).0.0" ;;
+            minor) version="${major}.$((minor + 1)).0" ;;
+            patch) version="${major}.${minor}.$((patch + 1))" ;;
+          esac
+          echo "Latest release: ${latest:-none}. Next: v$version"
+          if git ls-remote --exit-code origin "refs/heads/release/v$version" >/dev/null 2>&1; then
+            echo "::error::Branch release/v$version already exists. Merge or close its pull request first."
+            exit 1
+          fi
+          if ! grep -q '^## \[Unreleased\]' CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [Unreleased]' section to release."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Open the release pull request
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sed -i "s/^## \[Unreleased\]/## [Unreleased]\n\n## [v${VERSION}] - $(date -u +%Y-%m-%d)/" CHANGELOG.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "release/v$VERSION"
+          git commit -am "chore: release v$VERSION"
+          git push -u origin "release/v$VERSION"
+          gh pr create \
+            --title "chore: release v$VERSION" \
+            --body "Release pull request for v$VERSION. Merging it is the release decision: Tag Shared Release then creates the \`v$VERSION\` tag and GitHub Release from the merge commit." \
+            --base "$GITHUB_REF_NAME"

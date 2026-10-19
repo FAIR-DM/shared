@@ -1,0 +1,119 @@
+name: Prepare Release
+
+# Step 1 of a portal's release: open the release pull request, which sets the project version and
+# opens a CHANGELOG section for it. Merging that pull request is the release decision. The portal's
+# Tag Release workflow then cuts the tag and GitHub Release, and the release event publishes the
+# image.
+#
+# Portals version by calendar, <year>.<month>.<release>, so the version is worked out here from
+# today's date and the tags that already exist:
+#
+#   first release in a month   2026.10.1
+#   later the same month       2026.10.2
+#   first release next month   2026.11.1
+#
+# `version` overrides the computed value, for a backfill or a correction. Leave it empty for a
+# normal release.
+#
+# RELEASE_TOKEN is required: a pull request opened with GITHUB_TOKEN runs no checks, so it could
+# never merge.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Use this version instead of the computed <year>.<month>.<next>
+        type: string
+        default: ""
+    secrets:
+      RELEASE_TOKEN:
+        description: Token that pushes the release branch and opens the pull request
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Open release pull request
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          # Tags are the input to the version, so the full history is needed.
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Work out the version
+        id: version
+        env:
+          OVERRIDE: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$OVERRIDE" ]; then
+            version="$OVERRIDE"
+            echo "Using the override: $version"
+          else
+            year="$(date -u +%Y)"
+            # %-m gives 8 rather than 08. A zero-padded month would normalise to 8 in the
+            # package metadata and then never match its tag.
+            month="$(date -u +%-m)"
+            # The highest release number already tagged this month, so a reverted or abandoned
+            # release cannot hand out a number twice.
+            last="$(git tag --list "v${year}.${month}.*" \
+              | sed -E "s/^v${year}\.${month}\.//" \
+              | grep -E '^[0-9]+$' \
+              | sort -n \
+              | tail -1 || true)"
+            version="${year}.${month}.$(( ${last:-0} + 1 ))"
+            echo "Latest release this month: ${last:-none}. Next: $version"
+          fi
+
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "::error::Tag v$version already exists."
+            exit 1
+          fi
+          if git ls-remote --exit-code origin "refs/heads/release/v$version" >/dev/null 2>&1; then
+            echo "::error::Branch release/v$version already exists. Merge or close its pull request first."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+
+      # `uv version` updates the project's own entry in uv.lock with pyproject.toml, so
+      # `uv sync --locked` still passes on the release commit.
+      - name: Set the version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: uv version "$VERSION" --no-sync
+
+      - name: Open the CHANGELOG section
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if ! grep -q '^## \[Unreleased\]' CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [Unreleased]' section to release."
+            exit 1
+          fi
+          sed -i "s/^## \[Unreleased\]/## [Unreleased]\n\n## [v${VERSION}] - $(date -u +%Y-%m-%d)/" CHANGELOG.md
+
+      - name: Open the release pull request
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "release/v$VERSION"
+          git add pyproject.toml uv.lock CHANGELOG.md
+          git commit -m "chore: release v$VERSION"
+          git push -u origin "release/v$VERSION"
+          gh pr create \
+            --title "chore: release v$VERSION" \
+            --body "Release pull request for v$VERSION. Merging it is the release decision: Tag Release then creates the \`v$VERSION\` tag and GitHub Release from the merge commit, and the release publishes the image." \
+            --base "$GITHUB_REF_NAME"

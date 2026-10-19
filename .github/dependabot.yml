@@ -1,0 +1,27 @@
+# The actions the workflows use are this repository's only dependencies that portals inherit.
+# They arrive monthly as one grouped pull request, which the auto-merge workflow merges once the
+# example portal has passed every workflow with them. The example portal's own dependencies are
+# moved by hand, with its FairDM pin.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+      github-actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"

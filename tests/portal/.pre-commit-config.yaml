@@ -1,0 +1,27 @@
+# The example portal's hooks, a short version of a real portal's. The repository root is not the
+# portal, so the hooks are limited to this directory. Code Quality's `uv sync --locked` already
+# fails on a stale lock file.
+files: ^tests/portal/
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff (lint)
+        entry: uv run --project tests/portal ruff check --fix
+        language: system
+        types: [python]
+        require_serial: true
+      - id: ruff-format
+        name: ruff (format)
+        entry: uv run --project tests/portal ruff format
+        language: system
+        types: [python]
+        require_serial: true

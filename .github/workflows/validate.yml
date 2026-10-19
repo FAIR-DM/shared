@@ -1,0 +1,61 @@
+name: Validate
+
+# Checks this repository: every workflow file passes actionlint and the workflow schema, and the
+# example portal in tests/portal goes through each workflow a portal calls, so a change is proven
+# on a portal before any portal pins it.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# image.yml asks for packages: write, and a called workflow cannot ask for more than its caller
+# grants. Nothing is pushed here: the image is pushed only on a release event.
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  workflows:
+    name: Lint Workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Run actionlint
+        run: uvx --from actionlint-py actionlint -color
+
+      - name: Check the workflows against the schema
+        run: uvx --from check-jsonschema check-jsonschema --builtin-schema vendor.github-workflows .github/workflows/*.yml
+
+  example-tests:
+    uses: ./.github/workflows/tests.yml
+    with:
+      working-directory: tests/portal
+
+  example-browser-tests:
+    uses: ./.github/workflows/browser-tests.yml
+    with:
+      working-directory: tests/portal
+
+  example-build:
+    uses: ./.github/workflows/build-checks.yml
+    with:
+      working-directory: tests/portal
+
+  example-image:
+    uses: ./.github/workflows/image.yml
+    with:
+      working-directory: tests/portal

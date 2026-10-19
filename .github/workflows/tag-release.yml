@@ -1,0 +1,55 @@
+name: Tag Release
+
+# Step 2 of a portal's release: after a release pull request merges, cut the tag and GitHub
+# Release for the project version from the merge commit. It does nothing when the tag already
+# exists, or when CHANGELOG.md has no section for the version, so only a version Prepare Release
+# prepared is ever tagged. The caller runs it on pushes to main that change pyproject.toml.
+#
+# RELEASE_TOKEN is required: a release created with GITHUB_TOKEN fires no `release` event, and
+# the release event is what publishes the image.
+
+on:
+  workflow_call:
+    secrets:
+      RELEASE_TOKEN:
+        description: Token that creates the tag and the GitHub Release
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: Tag and create release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read the project version
+        id: version
+        run: |
+          python3 -c "import tomllib; print('version=' + tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])" >> "$GITHUB_OUTPUT"
+
+      - name: Create the tag and release if the version was prepared
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "Tag v$VERSION already exists. Nothing to release."
+            exit 0
+          fi
+          if ! grep -qF "## [v$VERSION]" CHANGELOG.md; then
+            echo "CHANGELOG.md has no section for v$VERSION, so it was not prepared. Nothing to release."
+            exit 0
+          fi
+          gh release create "v$VERSION" \
+            --target "$GITHUB_SHA" \
+            --title "v$VERSION" \
+            --generate-notes
+          echo "Created the tag and release v$VERSION at $GITHUB_SHA."

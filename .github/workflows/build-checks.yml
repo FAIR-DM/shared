@@ -1,0 +1,180 @@
+name: Build checks
+
+# Code Quality runs the portal's pre-commit hooks, and Security Scan runs bandit and pip-audit,
+# both in the FairDM development image the portal's FairDM declares, as in tests.yml. Hooks that
+# start Django need GeoDjango's libraries, which the image has.
+#
+# Security Scan is a report, not a gate: findings never fail it, but a scanner that produces no
+# report does, so a broken scanner cannot pass for a clean scan.
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: The portal's directory within the repository. Portals leave it unset.
+        type: string
+        default: "."
+
+permissions:
+  contents: read
+
+jobs:
+  platform:
+    name: Platform
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.read.outputs.image }}
+      postgis: ${{ steps.read.outputs.postgis }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read the platform the portal's FairDM declares
+        id: read
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'EOF'
+          import re
+          import sys
+          import tomllib
+          import urllib.request
+
+          with open("uv.lock", "rb") as lock:
+              packages = tomllib.load(lock).get("package", [])
+          fairdm = next((p for p in packages if p["name"] == "fairdm"), None)
+          if fairdm is None:
+              sys.exit("uv.lock has no fairdm package, so there is no platform to read.")
+          source = fairdm["source"]
+          if "git" in source:
+              pin = re.fullmatch(
+                  r"https://github\.com/([\w.-]+/[\w.-]+?)(?:\.git)?(?:\?[^#]*)?#([0-9a-f]{40})",
+                  source["git"],
+              )
+              if pin is None:
+                  sys.exit(f"Cannot read the platform of a FairDM pinned to {source['git']}.")
+              repository, ref = pin.groups()
+          elif "registry" in source:
+              repository, ref = "FAIR-DM/fairdm", f"v{fairdm['version']}"
+          else:
+              sys.exit(f"Cannot read the platform of a FairDM installed from {source}.")
+
+          url = f"https://raw.githubusercontent.com/{repository}/{ref}/pyproject.toml"
+          with urllib.request.urlopen(url, timeout=30) as response:
+              project = tomllib.loads(response.read().decode())
+          platform = project.get("tool", {}).get("fairdm", {}).get("platform", {})
+          for key in ("image", "postgis"):
+              if not re.fullmatch(r"[\w.-]+", str(platform.get(key, ""))):
+                  sys.exit(
+                      f"FairDM at {repository}@{ref} declares no valid [tool.fairdm.platform] "
+                      f"{key}. Pin a FairDM that declares its platform."
+                  )
+          print(
+              f"FairDM {repository}@{ref}: image {platform['image']}, "
+              f"PostGIS {platform['postgis']}",
+              file=sys.stderr,
+          )
+          print(f"image={platform['image']}")
+          print(f"postgis={platform['postgis']}")
+          EOF
+
+  code-quality:
+    name: Code Quality
+    needs: platform
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Cache uv downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles(format('{0}/uv.lock', inputs.working-directory)) }}
+          restore-keys: |
+            uv-${{ runner.os }}-
+
+      - name: Cache pre-commit environments
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles(format('{0}/.pre-commit-config.yaml', inputs.working-directory)) }}
+
+      # --locked fails when uv.lock is out of date with pyproject.toml. The checkout belongs to
+      # another user id than root, so git is told to trust it.
+      - name: Run pre-commit checks
+        env:
+          IMAGE: ghcr.io/fair-dm/fairdm:${{ needs.platform.outputs.image }}-dev
+          PORTAL_DIR: ${{ inputs.working-directory }}
+        run: |
+          mkdir -p "$HOME/.cache/uv" "$HOME/.cache/pre-commit"
+          docker run --rm --user root \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w "/workspace/$PORTAL_DIR" \
+            -v "$HOME/.cache/uv:/root/.cache/uv" \
+            -v "$HOME/.cache/pre-commit:/root/.cache/pre-commit" \
+            "$IMAGE" \
+            sh -c 'git config --global --add safe.directory /workspace && uv sync --locked && pre-commit run --all-files --show-diff-on-failure'
+
+  security:
+    name: Security Scan
+    needs: platform
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Cache uv downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles(format('{0}/uv.lock', inputs.working-directory)) }}
+          restore-keys: |
+            uv-${{ runner.os }}-
+
+      # bandit reads source files and runs from a throwaway environment. pip-audit is installed
+      # into the portal's environment and audits exactly what is installed there. `|| true`
+      # swallows only the scanners' "issues found" exit codes; the reports are checked next.
+      - name: Run bandit and pip-audit
+        env:
+          IMAGE: ghcr.io/fair-dm/fairdm:${{ needs.platform.outputs.image }}-dev
+          PORTAL_DIR: ${{ inputs.working-directory }}
+        run: |
+          mkdir -p "$HOME/.cache/uv"
+          docker run --rm --user root \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w "/workspace/$PORTAL_DIR" \
+            -v "$HOME/.cache/uv:/root/.cache/uv" \
+            "$IMAGE" \
+            sh -c '
+              set -e
+              uv sync --locked
+              uvx --from "bandit[toml]" bandit -r . --exclude ./tests,./.git,./.venv -f json -o bandit-report.json || true
+              uv pip install --python /opt/venv/bin/python pip-audit
+              pip-audit --local --format json --output pip-audit-report.json --progress-spinner off || true
+            '
+
+      - name: Check the reports were produced
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          for report in bandit-report.json pip-audit-report.json; do
+            test -s "$report" || { echo "::error::$report was not produced"; exit 1; }
+            python3 -c "import json, sys; json.load(open(sys.argv[1]))" "$report"
+          done
+
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: security-reports
+          path: |
+            ${{ inputs.working-directory }}/bandit-report.json
+            ${{ inputs.working-directory }}/pip-audit-report.json

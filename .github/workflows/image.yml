@@ -1,0 +1,198 @@
+name: Image
+
+# Builds a portal's production image from the Dockerfile at its root, on the FairDM base image
+# its FairDM declares (passed as the FAIRDM_IMAGE_VERSION build argument), and starts it against
+# PostGIS and Redis services. The check passes when the portal migrates, collects its static
+# files and answers 200.
+#
+# On a release event the checked image is then pushed to ghcr.io/<owner>/<repository> as
+# <version> and latest, where <version> is the release tag without its leading "v". On any other
+# event nothing is pushed. The caller grants `packages: write` on every event, because a called
+# workflow cannot ask for more than its caller grants.
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: The portal's directory within the repository. Portals leave it unset.
+        type: string
+        default: "."
+
+permissions:
+  contents: read
+
+jobs:
+  platform:
+    name: Platform
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.read.outputs.image }}
+      postgis: ${{ steps.read.outputs.postgis }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read the platform the portal's FairDM declares
+        id: read
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'EOF'
+          import re
+          import sys
+          import tomllib
+          import urllib.request
+
+          with open("uv.lock", "rb") as lock:
+              packages = tomllib.load(lock).get("package", [])
+          fairdm = next((p for p in packages if p["name"] == "fairdm"), None)
+          if fairdm is None:
+              sys.exit("uv.lock has no fairdm package, so there is no platform to read.")
+          source = fairdm["source"]
+          if "git" in source:
+              pin = re.fullmatch(
+                  r"https://github\.com/([\w.-]+/[\w.-]+?)(?:\.git)?(?:\?[^#]*)?#([0-9a-f]{40})",
+                  source["git"],
+              )
+              if pin is None:
+                  sys.exit(f"Cannot read the platform of a FairDM pinned to {source['git']}.")
+              repository, ref = pin.groups()
+          elif "registry" in source:
+              repository, ref = "FAIR-DM/fairdm", f"v{fairdm['version']}"
+          else:
+              sys.exit(f"Cannot read the platform of a FairDM installed from {source}.")
+
+          url = f"https://raw.githubusercontent.com/{repository}/{ref}/pyproject.toml"
+          with urllib.request.urlopen(url, timeout=30) as response:
+              project = tomllib.loads(response.read().decode())
+          platform = project.get("tool", {}).get("fairdm", {}).get("platform", {})
+          for key in ("image", "postgis"):
+              if not re.fullmatch(r"[\w.-]+", str(platform.get(key, ""))):
+                  sys.exit(
+                      f"FairDM at {repository}@{ref} declares no valid [tool.fairdm.platform] "
+                      f"{key}. Pin a FairDM that declares its platform."
+                  )
+          print(
+              f"FairDM {repository}@{ref}: image {platform['image']}, "
+              f"PostGIS {platform['postgis']}",
+              file=sys.stderr,
+          )
+          print(f"image={platform['image']}")
+          print(f"postgis={platform['postgis']}")
+          EOF
+
+  image:
+    name: Build image
+    needs: platform
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+
+    services:
+      postgres:
+        image: postgis/postgis:${{ needs.platform.outputs.postgis }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: portal
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build the portal image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.working-directory }}
+          file: ${{ inputs.working-directory }}/Dockerfile
+          build-args: FAIRDM_IMAGE_VERSION=${{ needs.platform.outputs.image }}
+          load: true
+          push: false
+          tags: portal:ci
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=portal-image
+          cache-to: type=gha,scope=portal-image,mode=max
+
+      # The request carries X-Forwarded-Proto as a proxy in front of the portal would, and is made
+      # from inside the container, which shares the runner's network with the services.
+      - name: Start the portal and wait for it to answer
+        run: |
+          secret_key=$(head -c 48 /dev/urandom | od -An -tx1 | tr -d ' \n')
+          docker run -d --name portal --network host \
+            -e DJANGO_SECRET_KEY="$secret_key" \
+            -e DJANGO_SITE_DOMAIN=localhost \
+            -e POSTGRES_HOST=localhost -e POSTGRES_PORT=5432 \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=portal \
+            -e REDIS_URL=redis://localhost:6379/0 \
+            portal:ci
+          for _ in $(seq 120); do
+            if [ "$(docker inspect --format '{{.State.Running}}' portal)" != "true" ]; then
+              echo "::error::The portal exited before it answered."
+              docker logs portal
+              exit 1
+            fi
+            status=$(docker exec portal python -c "
+          import urllib.request
+          request = urllib.request.Request('http://localhost:8000/', headers={'X-Forwarded-Proto': 'https'})
+          try:
+              print(urllib.request.urlopen(request, timeout=10).status)
+          except Exception as error:
+              print(getattr(error, 'code', 0))
+          " 2>/dev/null || echo 0)
+            if [ "$status" = "200" ]; then
+              echo "The portal answered 200."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::The portal did not answer 200 within 240 seconds (last status: $status)."
+          docker logs portal
+          exit 1
+
+      - name: Log in to GHCR
+        if: github.event_name == 'release'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Registry names are lower case, and repository names need not be.
+      - name: Push the image
+        if: github.event_name == 'release'
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${TAG_NAME#v}"
+          for tag in "$version" latest; do
+            docker tag portal:ci "$image:$tag"
+            docker push "$image:$tag"
+          done
