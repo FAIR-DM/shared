@@ -6,6 +6,11 @@ All notable changes to this repository are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The image workflow starts the portal with a backup key made for the run. FairDM 0.3 refuses to
+  start in production without `BACKUP_PUBLIC_KEY`, so every portal on it failed this check.
+
 ## [v0.1.0] - 2026-10-19
 
 ### Added

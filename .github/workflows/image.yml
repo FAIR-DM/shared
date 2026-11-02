@@ -145,8 +145,12 @@ jobs:
       - name: Start the portal and wait for it to answer
         run: |
           secret_key=$(head -c 48 /dev/urandom | od -An -tx1 | tr -d ' \n')
+          # FairDM refuses to start in production without a backup key. This one lasts the run.
+          gpg --batch --passphrase '' --quick-generate-key portal-ci@example.invalid
+          backup_key=$(gpg --armor --export portal-ci@example.invalid)
           docker run -d --name portal --network host \
             -e DJANGO_SECRET_KEY="$secret_key" \
+            -e BACKUP_PUBLIC_KEY="$backup_key" \
             -e DJANGO_SITE_DOMAIN=localhost \
             -e POSTGRES_HOST=localhost -e POSTGRES_PORT=5432 \
             -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=portal \
