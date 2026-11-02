@@ -6,6 +6,8 @@ All notable changes to this repository are recorded here. The format follows
 
 ## [Unreleased]
 
+## [v0.1.1] - 2026-11-02
+
 ### Fixed
 
 - The image workflow starts the portal with a backup key made for the run. FairDM 0.3 refuses to
